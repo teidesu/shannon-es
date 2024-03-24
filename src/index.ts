@@ -1,7 +1,35 @@
-/* jshint -W097 */
-// jshint strict:false
-/*jslint node: true */
-'use strict';
+/*
+* Fold is how many register cycles need to be performed after combining the
+* last byte of key and non-linear feedback, before every byte depends on every
+* byte of the key. This depends on the feedback and nonlinear functions, and
+* on where they are combined into the register. Making it same as the register
+* length is a safe and conservative choice.
+*/
+const N = 16;
+const FOLD = N; // How many iterations of folding to do.
+const INITKONST = 0x6996c53a; // Value of konst to use during key loading.
+const KEYP = 13; // Where to insert key/MAC/counter words.
+
+const rotateLeft = function (i: number, distance: number) {
+	return (i << distance) | (i >>> -distance);
+}
+
+/**
+ * Nonlinear transform (sbox) of a word. There are two slightly different combinations.
+ */
+const sbox = function(i: number) {
+	i ^= rotateLeft(i, 5) | rotateLeft(i, 7);
+	i ^= rotateLeft(i, 19) | rotateLeft(i, 22);
+
+	return i;
+}
+
+const sbox2 = function(i: number) {
+	i ^= rotateLeft(i, 7) | rotateLeft(i, 22);
+	i ^= rotateLeft(i, 5) | rotateLeft(i, 19);
+
+	return i;
+}
 
 /**
  * Implementation of the Shannon stream-cipher.
@@ -10,92 +38,40 @@
  *
  * @author Felix Bruns <felixbruns@web.de>
  */
-function Shannon(options) {
-	let self = this;
-
-	/*
-	 * Fold is how many register cycles need to be performed after combining the
-	 * last byte of key and non-linear feedback, before every byte depends on every
-	 * byte of the key. This depends on the feedback and nonlinear functions, and
-	 * on where they are combined into the register. Making it same as the register
-	 * length is a safe and conservative choice.
-	 */
-	const N = 16;
-	const FOLD = N; // How many iterations of folding to do.
-	const INITKONST = 0x6996c53a; // Value of konst to use during key loading.
-	const KEYP = 13; // Where to insert key/MAC/counter words.
-
-	let _initArray = function(n) {
-		let a = new Array(n);
-		for(let i = 0; i < n;i++) {
-			a[i] = 0;
-		}
-		return a;
+export class Shannon {
+	constructor(key?: Uint8Array) {
+		if (key) this.key(key)
 	}
 
-	let R = _initArray(N); // Working storage for the shift register.
-	let CRC = _initArray(N); // Working storage for CRC accumulation.
-	let initR = _initArray(N); // Saved register contents.
-	let konst = 0; // Key dependant semi-constant.
-	let sbuf = 0;  // Encryption buffer.
-	let mbuf = 0;  // Partial word MAC buffer.
-	let nbuf = 0;  // Number of part-word stream bits buffered.
-
-	let _rotateLeft = function (i, distance) {
-        return (i << distance) | (i >>> -distance);
-    }
-
-	let _bufferToArray = function(buffer) {
-		if(typeof buffer === 'string' || buffer instanceof String) {
-			buffer = Buffer.from(buffer);
-		}
-		if(Buffer.isBuffer(buffer)) {
-			let arr = new Array();
-			arr.push(...buffer);
-			buffer = arr;
-		}
-
-		return buffer;
-	}
-
-	/**
-	 * Nonlinear transform (sbox) of a word. There are two slightly different combinations.
-	 */
-	let sbox = function(i) {
-		i ^= _rotateLeft(i, 5) | _rotateLeft(i, 7);
-		i ^= _rotateLeft(i, 19) | _rotateLeft(i, 22);
-
-		return i;
-	}
-
-	let sbox2 = function(i) {
-		i ^= _rotateLeft(i, 7) | _rotateLeft(i, 22);
-		i ^= _rotateLeft(i, 5) | _rotateLeft(i, 19);
-
-		return i;
-	}
+	R = new Int32Array(N); // Working storage for the shift register.
+	CRC = new Int32Array(N); // Working storage for CRC accumulation.
+	initR = new Int32Array(N); // Saved register contents.
+	konst = 0; // Key dependant semi-constant.
+	sbuf = 0;  // Encryption buffer.
+	mbuf = 0;  // Partial word MAC buffer.
+	nbuf = 0;  // Number of part-word stream bits buffered.
 
 	/**
 	 * Cycle the contents of the register and calculate output word in sbuf.
 	 */
-	let cycle = function() {
+	private cycle() {
 		// Temporary variable.
 		let t = 0;
 
 		// Nonlinear feedback function.
-		t = R[12] ^ R[13] ^ konst;
-		t = sbox(t) ^ _rotateLeft(R[0], 1);
+		t = this.R[12] ^ this.R[13] ^ this.konst;
+		t = sbox(t) ^ rotateLeft(this.R[0], 1);
 
 		// Shift register.
 		for(let i = 1; i < N; i++) {
-			R[i - 1] = R[i];
+			this.R[i - 1] = this.R[i];
 		}
 
-		R[N - 1] = t;
+		this.R[N - 1] = t;
 
-		t = sbox2(R[2] ^ R[15]);
-		R[0] ^= t;
-		sbuf = t ^ R[8] ^ R[12];
+		t = sbox2(this.R[2] ^ this.R[15]);
+		this.R[0] ^= t;
+		this.sbuf = t ^ this.R[8] ^ this.R[12];
 	}
 
 	/*
@@ -113,83 +89,83 @@ function Shannon(options) {
 	 * This is actually 32 parallel CRC-16s, using the IBM CRC-16
 	 * polynomian x^16 + x^15 + x^2 + 1
 	 */
-	let crcFunc = function(i) {
+	private crcFunc(i: number) {
 		// Temporary variable.
 		let t = 0;
 
 		// Accumulate CRC of input.
-		t = CRC[0] ^ CRC[2] ^ CRC[15] ^ i;
+		t = this.CRC[0] ^ this.CRC[2] ^ this.CRC[15] ^ i;
 
 		for(let j = 1; j < N; j++) {
-			CRC[j - 1] = CRC[j];
+			this.CRC[j - 1] = this.CRC[j];
 		}
 
-		CRC[N - 1] = t;
+		this.CRC[N - 1] = t;
 	}
 
 	/**
 	 * Normal MAC word processing: do both stream register and CRC.
 	 */
-	let macFunc = function(i) {
-		crcFunc(i);
+	private macFunc(i: number) {
+		this.crcFunc(i);
 
-		R[KEYP] ^= i;
+		this.R[KEYP] ^= i;
 	}
 
 	/**
 	 * Initialize to known state.
 	 */
-	let initState = function() {
+	initState() {
 		// Register initialized to Fibonacci numbers.
-		R[0] = 1;
-		R[1] = 1;
+		this.R[0] = 1;
+		this.R[1] = 1;
 
 		for(let i = 2; i < N; i++) {
-			R[i] = R[i - 1] + R[i - 2];
+			this.R[i] = this.R[i - 1] + this.R[i - 2];
 		}
 
 		// Initialization constant.
-		konst = INITKONST;
+		this.konst = INITKONST;
 	}
 
 	/**
 	 * Save the current register state.
 	 */
-	let saveState = function() {
+	saveState() {
 		for(let i = 0; i < N; i++) {
-			initR[i] = R[i];
+			this.initR[i] = this.R[i];
 		}
 	}
 
 	/**
 	 * Inisialize to previously saved register state.
 	 */
-	let reloadState = function() {
+	reloadState() {
 		for(let i = 0; i < N; i++) {
-			R[i] = initR[i];
+			this.R[i] = this.initR[i];
 		}
 	}
 
 	/**
 	 * Initialize 'konst'.
 	 */
-	let genKonst = function() {
-		konst = R[0];
+	genKonst() {
+		this.konst = this.R[0];
 	}
 
 	/**
 	 * Load key material into the register.
 	 */
-	let addKey = function(k) {
-		R[KEYP] ^= k;
+	addKey(k: number) {
+		this.R[KEYP] ^= k;
 	}
 
 	/**
 	 * Extra nonlinear diffusion of register for key and MAC.
 	 */
-	let diffuse = function() {
+	diffuse() {
 		for(let i = 0; i < FOLD; i++) {
-			cycle();
+			this.cycle();
 		}
 	}
 
@@ -198,8 +174,8 @@ function Shannon(options) {
 	 * Allow non-word-multiple key and nonce material.
 	 * Note: Also initializes the CRC register as a side effect.
 	 */
-	let loadKey = function(_key) {
-		let extra = _initArray(4);
+	loadKey(_key: Uint8Array) {
+		let extra = new Uint8Array(4);
 		let i = 0;
 		let j = 0;
 		let t = 0;
@@ -213,10 +189,10 @@ function Shannon(options) {
 				((_key[i] & 0xFF));
 
 			// Insert key word at index 13.
-			addKey(t);
+			this.addKey(t);
 
 			// Cycle register.
-			cycle();
+			this.cycle();
 		}
 
 		// If there were any extra bytes, zero pad to a word.
@@ -238,93 +214,98 @@ function Shannon(options) {
 				((extra[0] & 0xFF));
 
 			// Insert key word at index 13.
-			addKey(t);
+			this.addKey(t);
 
 			// Cycle register.
-			cycle();
+			this.cycle();
 		}
 
 		// Also fold in the length of the key.
-		addKey(_key.length);
+		this.addKey(_key.length);
 
 		// Cycle register.
-		cycle();
+		this.cycle();
 
 		// Save a copy of the register.
 		for(i = 0; i < N; i++) {
-			CRC[i] = R[i];
+			this.CRC[i] = this.R[i];
 		}
 
 		// Now diffuse.
-		diffuse();
+		this.diffuse();
 
 		// Now XOR the copy back -- makes key loading irreversible.
 		for(i = 0; i < N; i++) {
-			R[i] ^= CRC[i];
+			this.R[i] ^= this.CRC[i];
 		}
 	}
 
 	/**
 	 * Set key
 	 */
-	let key = function(_key) {
-		_key = _bufferToArray(_key);
-
+	key(_key: Uint8Array) {
 		// Initializet known state.
-		initState();
+		this.initState();
 
 		// Load key material.
-		loadKey(_key);
+		this.loadKey(_key);
 
 		// In case we proceed to stream generation.
-		genKonst();
+		this.genKonst();
 
 		// Save register state.
-		saveState();
+		this.saveState();
 
 		// Set 'nbuf' value to zero.
-		nbuf = 0;
+		this.nbuf = 0;
 	}
 
 	/**
 	 * Set IV
 	 */
-	let nonce = function(_nonce) {
-		_nonce = _bufferToArray(_nonce);
-
+	nonce(_nonce: Uint8Array) {
 		// Reload register state.
-		reloadState();
+		this.reloadState();
 
 		// Set initialization constant.
-		konst = INITKONST;
+		this.konst = INITKONST;
 
 		// Load "IV" material.
-		loadKey(_nonce);
+		this.loadKey(_nonce);
 
 		// Set 'konst'.
-		genKonst();
+		this.genKonst();
 
 		// Set 'nbuf' value to zero.
-		nbuf = 0;
+		this.nbuf = 0;
+	}
+
+	nonce32(nonce: number) {
+		let b = new Uint8Array(4);
+
+		b[0] = (nonce >> 24) & 0xFF;
+		b[1] = (nonce >> 16) & 0xFF;
+		b[2] = (nonce >> 8) & 0xFF;
+		b[3] = (nonce) & 0xFF;
+
+		this.nonce(b);
 	}
 
 	/**
 	 * XOR pseudo-random bytes into buffer.
 	 * Note: doesn't play well with MAC functions.
 	 */
-	let stream = function(buffer) {
-		buffer = _bufferToArray(buffer);
-
+	stream(buffer: Uint8Array, output = buffer) {
 		let i = 0;
 		let j = 0;
 		let n = buffer.length;
 
 		// Handle any previously buffered bytes.
-		while(nbuf != 0 && n != 0) {
-			buffer[i++] ^= sbuf & 0xFF;
+		while(this.nbuf != 0 && n != 0) {
+			output[i++] ^= this.sbuf & 0xFF;
 
-			sbuf >>= 8;
-			nbuf -= 8;
+			this.sbuf >>= 8;
+			this.nbuf -= 8;
 
 			n--;
 		}
@@ -334,13 +315,13 @@ function Shannon(options) {
 
 		while(i < j) {
 			// Cycle register.
-			cycle();
+			this.cycle();
 
 			// XOR word.
-			buffer[i + 3] ^= (sbuf >> 24) & 0xFF;
-			buffer[i + 2] ^= (sbuf >> 16) & 0xFF;
-			buffer[i + 1] ^= (sbuf >>  8) & 0xFF;
-			buffer[i] ^= (sbuf) & 0xFF;
+			output[i + 3] ^= (this.sbuf >> 24) & 0xFF;
+			output[i + 2] ^= (this.sbuf >> 16) & 0xFF;
+			output[i + 1] ^= (this.sbuf >>  8) & 0xFF;
+			output[i] ^= (this.sbuf) & 0xFF;
 
 			i += 4;
 		}
@@ -350,51 +331,49 @@ function Shannon(options) {
 
 		if(n != 0) {
 			// Cycle register.
-			cycle();
+			this.cycle();
 
-			nbuf = 32;
+			this.nbuf = 32;
 
-			while(nbuf != 0 && n != 0) {
-				buffer[i++] ^= sbuf & 0xFF;
+			while(this.nbuf != 0 && n != 0) {
+				output[i++] ^= this.sbuf & 0xFF;
 
-				sbuf >>= 8;
-				nbuf -= 8;
+				this.sbuf >>= 8;
+				this.nbuf -= 8;
 
 				n--;
 			}
 		}
 
-		return Buffer.from(buffer);
+		return output;
 	}
 
 	/**
 	 * Accumulate words into MAC without encryption.
 	 * Note that plaintext is accumulated for MAC.
 	 */
-	let macOnly = function(buffer) {
-		buffer = _bufferToArray(buffer);
-
+	macOnly(buffer: Uint8Array) {
 		let i = 0;
 		let j = 0;
 		let n = buffer.length;
 		let t = 0;
 
 		// Handle any previously buffered bytes.
-		if(nbuf != 0) {
-			while(nbuf != 0 && n != 0) {
-				mbuf ^= buffer[i++] << (32 - nbuf);
-				nbuf -= 8;
+		if(this.nbuf != 0) {
+			while(this.nbuf != 0 && n != 0) {
+				this.mbuf ^= buffer[i++] << (32 - this.nbuf);
+				this.nbuf -= 8;
 
 				n--;
 			}
 
 			// Not a whole word yet.
-			if(nbuf != 0) {
-				return Buffer.from(buffer);
+			if(this.nbuf != 0) {
+				return;
 			}
 
 			// LFSR already cycled.
-			macFunc(mbuf);
+			this.macFunc(this.mbuf);
 		}
 
 		// Handle whole words.
@@ -402,7 +381,7 @@ function Shannon(options) {
 
 		while(i < j) {
 			// Cycle register.
-			cycle();
+			this.cycle();
 
 			// Shift 4 bytes into one word.
 			t =	((buffer[i + 3] & 0xFF) << 24) |
@@ -410,7 +389,7 @@ function Shannon(options) {
 				((buffer[i + 1] & 0xFF) << 8) |
 				((buffer[i] & 0xFF));
 
-			macFunc(t);
+			this.macFunc(t);
 
 			i += 4;
 		}
@@ -420,55 +399,52 @@ function Shannon(options) {
 
 		if(n != 0) {
 			// Cycle register.
-			cycle();
+			this.cycle();
 
-			mbuf = 0;
-			nbuf = 32;
+			this.mbuf = 0;
+			this.nbuf = 32;
 
-			while(nbuf != 0 && n != 0) {
-				mbuf ^= buffer[i++] << (32 - nbuf);
-				nbuf -= 8;
+			while(this.nbuf != 0 && n != 0) {
+				this.mbuf ^= buffer[i++] << (32 - this.nbuf);
+				this.nbuf -= 8;
 
 				n--;
 			}
 		}
 
-		return Buffer.from(buffer);
+		return;
 	}
 
 	/**
 	 * Combined MAC and encryption.
 	 * Note that plaintext is accumulated for MAC.
 	 */
-	let encrypt = function(buffer, n) {
-		buffer = _bufferToArray(buffer);
-		if(n == null) {
-			n = buffer.length;
-		}
+	encrypt(buffer: Uint8Array, output = buffer) {
+		let n = buffer.length;
 		let i = 0;
 		let j = 0;
 		let t = 0;
 
 		// Handle any previously buffered bytes.
-		if(nbuf != 0) {
-			while(nbuf != 0 && n != 0) {
-				mbuf ^= (buffer[i] & 0xFF) << (32 - nbuf);
-				buffer[i] ^= (sbuf >> (32 - nbuf)) & 0xFF;
+		if(this.nbuf != 0) {
+			while(this.nbuf != 0 && n != 0) {
+				this.mbuf ^= (buffer[i] & 0xFF) << (32 - this.nbuf);
+				output[i] ^= (this.sbuf >> (32 - this.nbuf)) & 0xFF;
 
 				i++;
 
-				nbuf -= 8;
+				this.nbuf -= 8;
 
 				n--;
 			}
 
 			// Not a whole word yet.
-			if(nbuf != 0) {
-				return Buffer.from(buffer);
+			if(this.nbuf != 0) {
+				return output;
 			}
 
 			// LFSR already cycled.
-			macFunc(mbuf);
+			this.macFunc(this.mbuf);
 		}
 
 		// Handle whole words.
@@ -476,7 +452,7 @@ function Shannon(options) {
 
 		while(i < j) {
 			// Cycle register.
-			cycle();
+			this.cycle();
 
 			// Shift 4 bytes into one word.
 			t =	((buffer[i + 3] & 0xFF) << 24) |
@@ -484,15 +460,15 @@ function Shannon(options) {
 				((buffer[i + 1] & 0xFF) << 8) |
 				((buffer[i] & 0xFF));
 
-			macFunc(t);
+			this.macFunc(t);
 
-			t ^= sbuf;
+			t ^= this.sbuf;
 
 			// Put word into byte buffer.
-			buffer[i + 3] = (t >> 24) & 0xFF;
-			buffer[i + 2] = (t >> 16) & 0xFF;
-			buffer[i + 1] = (t >>  8) & 0xFF;
-			buffer[i] = (t) & 0xFF;
+			output[i + 3] = (t >> 24) & 0xFF;
+			output[i + 2] = (t >> 16) & 0xFF;
+			output[i + 1] = (t >>  8) & 0xFF;
+			output[i] = (t) & 0xFF;
 
 			i += 4;
 		}
@@ -502,59 +478,56 @@ function Shannon(options) {
 
 		if(n != 0) {
 			// Cycle register.
-			cycle();
+			this.cycle();
 
-			mbuf = 0;
-			nbuf = 32;
+			this.mbuf = 0;
+			this.nbuf = 32;
 
-			while(nbuf != 0 && n != 0) {
-				mbuf ^= (buffer[i] & 0xFF) << (32 - nbuf);
-				buffer[i] ^= (sbuf >> (32 - nbuf)) & 0xFF;
+			while(this.nbuf != 0 && n != 0) {
+				this.mbuf ^= (buffer[i] & 0xFF) << (32 - this.nbuf);
+				output[i] ^= (this.sbuf >> (32 - this.nbuf)) & 0xFF;
 
 				i++;
 
-				nbuf -= 8;
+				this.nbuf -= 8;
 
 				n--;
 			}
 		}
 
-		return Buffer.from(buffer);
+		return output;
 	}
 
 	/**
 	 * Combined MAC and decryption.
 	 * Note that plaintext is accumulated for MAC.
 	 */
-	let decrypt = function(buffer, n) {
-		buffer = _bufferToArray(buffer);
-		if(n == null) {
-			n = buffer.length;
-		}
+	decrypt(buffer: Uint8Array, output = buffer) {
+		let n = buffer.length;
 		let i = 0;
 		let j = 0;
 		let t = 0;
 
 		// Handle any previously buffered bytes.
-		if(nbuf != 0) {
-			while(nbuf != 0 && n != 0) {
-				buffer[i] ^= (sbuf >> (32 - nbuf)) & 0xFF;
-				mbuf ^= (buffer[i] & 0xFF) << (32 - nbuf);
+		if(this.nbuf != 0) {
+			while(this.nbuf != 0 && n != 0) {
+				output[i] ^= (this.sbuf >> (32 - this.nbuf)) & 0xFF;
+				this.mbuf ^= (buffer[i] & 0xFF) << (32 - this.nbuf);
 
 				i++;
 
-				nbuf -= 8;
+				this.nbuf -= 8;
 
 				n--;
 			}
 
 			// Not a whole word yet.
-			if(nbuf != 0) {
-				return Buffer.from(buffer);
+			if(this.nbuf != 0) {
+				return output;
 			}
 
 			// LFSR already cycled.
-			macFunc(mbuf);
+			this.macFunc(this.mbuf);
 		}
 
 		// Handle whole words.
@@ -562,7 +535,7 @@ function Shannon(options) {
 
 		while(i < j) {
 			// Cycle register.
-			cycle();
+			this.cycle();
 
 			// Shift 4 bytes into one word.
 			t =	((buffer[i + 3] & 0xFF) << 24) |
@@ -570,15 +543,15 @@ function Shannon(options) {
 				((buffer[i + 1] & 0xFF) << 8) |
 				((buffer[i] & 0xFF));
 
-			t ^= sbuf;
+			t ^= this.sbuf;
 
-			macFunc(t);
+			this.macFunc(t);
 
 			// Put word into byte buffer.
-			buffer[i + 3] = (t >> 24) & 0xFF;
-			buffer[i + 2] = (t >> 16) & 0xFF;
-			buffer[i + 1] = (t >>  8) & 0xFF;
-			buffer[i] = (t) & 0xFF;
+			output[i + 3] = (t >> 24) & 0xFF;
+			output[i + 2] = (t >> 16) & 0xFF;
+			output[i + 1] = (t >>  8) & 0xFF;
+			output[i] = (t) & 0xFF;
 
 			i += 4;
 		}
@@ -588,24 +561,24 @@ function Shannon(options) {
 
 		if(n != 0) {
 			// Cycle register.
-			cycle();
+			this.cycle();
 
-			mbuf = 0;
-			nbuf = 32;
+			this.mbuf = 0;
+			this.nbuf = 32;
 
-			while(nbuf != 0 && n != 0) {
-				buffer[i] ^= (sbuf >> (32 - nbuf)) & 0xFF;
-				mbuf ^= (buffer[i] & 0xFF) << (32 - nbuf);
+			while(this.nbuf != 0 && n != 0) {
+				buffer[i] ^= (this.sbuf >> (32 - this.nbuf)) & 0xFF;
+				this.mbuf ^= (buffer[i] & 0xFF) << (32 - this.nbuf);
 
 				i++;
 
-				nbuf -= 8;
+				this.nbuf -= 8;
 
 				n--;
 			}
 		}
 
-		return Buffer.from(buffer);
+		return output;
 	}
 
 	/**
@@ -613,18 +586,16 @@ function Shannon(options) {
 	 * Note that any unprocessed bytes are treated as if they were
 	 * encrypted zero bytes, so plaintext (zero) is accumulated.
 	 */
-	let finish = function(buffer, n) {
-		buffer = _bufferToArray(buffer);
-		if(n == null) {
-			n = buffer.length;
-		}
+	finish(output: Uint8Array | number) {
+		if (typeof output === 'number') output = new Uint8Array(output)
+		let n = output.length
 		let i = 0;
 		let j = 0;
 
 		// Handle any previously buffered bytes.
-		if(nbuf != 0) {
+		if(this.nbuf != 0) {
 			// LFSR already cycled.
-			macFunc(mbuf);
+			this.macFunc(this.mbuf);
 		}
 
 		/**
@@ -633,54 +604,40 @@ function Shannon(options) {
 		 * This is an action that can't be duplicated by passing in plaintext,
 		 * hence defeating any kind of extension attack.
 		 */
-		cycle();
-		addKey(INITKONST ^ (nbuf << 3));
+		this.cycle();
+		this.addKey(INITKONST ^ (this.nbuf << 3));
 
-		nbuf = 0;
+		this.nbuf = 0;
 
 		// Now add the CRC to the stream register and diffuse it.
 		for(j = 0; j < N; j++) {
-			R[j] ^= CRC[j];
+			this.R[j] ^= this.CRC[j];
 		}
 
-		diffuse();
+		this.diffuse();
 
 		// Produce output from the stream buffer.
 		while(n > 0) {
-			cycle();
+			this.cycle();
 
 			if(n >= 4) {
 				// Put word into byte buffer.
-				buffer[i + 3] = (sbuf >> 24) & 0xFF;
-				buffer[i + 2] = (sbuf >> 16) & 0xFF;
-				buffer[i + 1] = (sbuf >>  8) & 0xFF;
-				buffer[i] = (sbuf) & 0xFF;
+				output[i + 3] = (this.sbuf >> 24) & 0xFF;
+				output[i + 2] = (this.sbuf >> 16) & 0xFF;
+				output[i + 1] = (this.sbuf >>  8) & 0xFF;
+				output[i] = (this.sbuf) & 0xFF;
 
 				n -= 4;
 				i += 4;
 			} else {
 				for(j = 0; j < n; j++) {
-					buffer[i + j] = (sbuf >> (i * 8)) & 0xFF;
+					output[i + j] = (this.sbuf >> (i * 8)) & 0xFF;
 				}
 
 				break;
 			}
 		}
 
-		return Buffer.from(buffer);
-	}
-
-	self.key = key;
-	self.nonce = nonce;
-	self.stream = stream;
-	self.macOnly = macOnly;
-	self.encrypt = encrypt;
-	self.decrypt = decrypt;
-	self.finish = finish;
-
-	if(options != null) {
-		key(options);
+		return output;
 	}
 }
-
-module.exports = Shannon;

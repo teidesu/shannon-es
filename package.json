@@ -1,18 +1,23 @@
 {
-  "name": "shannon",
+  "name": "shannon-es",
   "version": "0.0.1",
-  "description": "Shannon stream cipher",
+  "description": "Shannon stream cipher in modern JavaScript",
   "author": {
-    "name": "twonky4",
-    "email": "twonky4@gmx.de"
+    "name": "alina sireneva",
+    "email": "alina@tei.su"
   },
   "contributors": [
     {
       "name": "twonky4",
       "email": "twonky4@gmx.de"
+    },
+    {
+      "name": "alina sireneva",
+      "email": "alina@tei.su"
     }
   ],
-  "homepage": "https://github.com/twonky4/shannon",
+  "type": "module",
+  "homepage": "https://github.com/teidesu/shannon-es",
   "license": "MIT",
   "keywords": [
     "shannon",
@@ -21,18 +26,32 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/twonky4/shannon"
+    "url": "https://github.com/teidesu/shannon-es"
   },
-  "main": "main.js",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
   "devDependencies": {
-    "mocha": "^4.1.0",
-    "chai": "^4.1.2"
+    "@types/node": "^20.11.30",
+    "vite": "^5.2.6",
+    "vite-plugin-dts": "^3.7.3",
+    "vitest": "1.4.0"
   },
   "scripts": {
-    "test": "node node_modules/mocha/bin/mocha --exit"
+    "test": "vitest",
+    "build": "vite build"
   },
   "bugs": {
-    "url": "https://github.com/twonky4/shannon/issues"
+    "url": "https://github.com/teidesu/shannon-es/issues"
   },
   "readmeFilename": "README.md"
 }
